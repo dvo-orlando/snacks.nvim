@@ -9,8 +9,9 @@ local Tree = require("snacks.explorer.tree")
 local M = {}
 
 ---@param node snacks.picker.explorer.Node
+---@param filter? fun(node: snacks.picker.explorer.Node): boolean?
 ---@return integer
-function M.weight(node)
+function M.weight(node, filter)
   if not node.dir then
     return 1
   end
@@ -18,25 +19,32 @@ function M.weight(node)
     Tree:expand(node)
   end
   local count = 0
-  for _ in pairs(node.children) do
-    count = count + 1
+  for _, child in pairs(node.children) do
+    if not filter or filter(child) then
+      count = count + 1
+    end
   end
-  -- an empty (or unreadable) directory still needs a nonzero weight to
-  -- occupy space in the layout
+  -- an empty (or unreadable, or fully-filtered-out) directory still needs a
+  -- nonzero weight to occupy space in the layout
   return math.max(count, 1)
 end
 
---- Weights for every immediate child of `dir_node` — the per-box sizing
---- input for a single-level treemap of that directory.
+--- Weights for every immediate child of `dir_node` that passes `filter` —
+--- the per-box sizing input for a single-level treemap of that directory.
+--- `filter` should match `Tree:filter(...)`'s shape (hidden/ignored/exclude
+--- respected the same way the list view respects them).
 ---@param dir_node snacks.picker.explorer.Node
+---@param filter? fun(node: snacks.picker.explorer.Node): boolean?
 ---@return {name:string, weight:integer}[]
-function M.child_weights(dir_node)
+function M.child_weights(dir_node, filter)
   if not dir_node.expanded then
     Tree:expand(dir_node)
   end
   local items = {}
   for name, child in pairs(dir_node.children) do
-    items[#items + 1] = { name = name, weight = M.weight(child) }
+    if not filter or filter(child) then
+      items[#items + 1] = { name = name, weight = M.weight(child, filter) }
+    end
   end
   return items
 end

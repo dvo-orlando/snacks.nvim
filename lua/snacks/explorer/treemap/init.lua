@@ -29,6 +29,31 @@ local FOCUS_HL = "SnacksPickerTreemapFocus"
 -- Step 1 spike) — scale the height axis down before layout, then back up
 local CELL_ASPECT = 0.5
 
+-- The sidebar's fixed ~40-column width is exactly the shape a treemap reads
+-- worst in (see the Step 1 spike: narrow grids squeeze legibility, wide ones
+-- don't) — so treemap mode pops into a big, roughly-square floating layout
+-- instead, and reverts to the picker's configured layout (the sidebar) on
+-- toggle-off. `picker:set_layout` reflows the *same* input/list windows into
+-- a different box arrangement rather than recreating them.
+local function popout_layout()
+  return {
+    preview = false,
+    layout = {
+      backdrop = true,
+      width = 0.85,
+      height = 0.85,
+      min_width = 100,
+      min_height = 30,
+      box = "vertical",
+      border = "rounded",
+      title = "{title} {live} {flags}",
+      title_pos = "center",
+      { win = "input", height = 1, border = "bottom" },
+      { win = "list", border = "none" },
+    },
+  }
+end
+
 ---@class snacks.explorer.treemap.State
 ---@field enabled boolean
 ---@field rects table[]? last-rendered cells: {name, weight, row0, col0, row1, col1}
@@ -83,6 +108,37 @@ function M.current_from_list(list)
   return M.current(list.picker)
 end
 
+-- Same status -> highlight group mapping the list view's file-tree
+-- formatter uses (`snacks.picker.format.file_git_status`), so treemap
+-- coloring reads as the same color language, not a reinvented one.
+---@param node snacks.picker.explorer.Node
+---@return string?
+local function status_highlight(node)
+  local code = node.dir and (node.dir_status or node.status) or node.status
+  if not code then
+    return nil
+  end
+  local ok, status = pcall(require("snacks.picker.source.git").git_status, code)
+  if not ok or not status or not status.status then
+    return nil
+  end
+  if status.unmerged then
+    return "SnacksPickerGitStatusUnmerged"
+  elseif status.staged then
+    return "SnacksPickerGitStatusStaged"
+  end
+  return "SnacksPickerGitStatus" .. status.status:sub(1, 1):upper() .. status.status:sub(2)
+end
+
+---@param buf number
+---@param cell table
+---@param hl_group string
+local function highlight_cell(buf, cell, hl_group)
+  for row = cell.row0, cell.row1 do
+    vim.api.nvim_buf_add_highlight(buf, ns, hl_group, row + 1, cell.col0, cell.col1 + 1)
+  end
+end
+
 ---@param cell table?
 local function header_text(cell)
   if not cell then
@@ -101,7 +157,11 @@ function M.render(list)
 
   local cwd = picker:cwd()
   local dir_node = Tree:find(cwd)
-  local items = Weight.child_weights(dir_node)
+  -- same hidden/ignored/exclude/include filter the list view applies, so
+  -- toggling `H`/`I` (or a static `exclude`/`include` config) affects the
+  -- treemap the same way, and .git/node_modules-style noise doesn't clutter it
+  local filter = Tree:filter(picker.opts)
+  local items = Weight.child_weights(dir_node, filter)
   -- deterministic input order, otherwise unrelated re-renders (resize, a
   -- sibling's diagnostics changing) can visibly reshuffle equal-weight boxes
   table.sort(items, function(a, b)
@@ -110,7 +170,9 @@ function M.render(list)
 
   local nodes = {}
   for name, child in pairs(dir_node.children) do
-    nodes[name] = child
+    if filter(child) then
+      nodes[name] = child
+    end
   end
 
   local width = vim.api.nvim_win_get_width(list.win.win)
@@ -145,11 +207,18 @@ function M.render(list)
   vim.api.nvim_buf_add_highlight(list.win.buf, ns, HEADER_HL, 0, 0, -1)
   vim.api.nvim_buf_set_lines(list.win.buf, 1, -1, false, lines)
 
+  -- git-status coloring first (every cell), focus highlight last so it
+  -- visually wins over a status color on the same cell
+  for _, cell in ipairs(cells) do
+    local node = nodes[cell.name]
+    local hl = node and status_highlight(node)
+    if hl then
+      highlight_cell(list.win.buf, cell, hl)
+    end
+  end
   local focused_cell = cells[state.focused]
   if focused_cell then
-    for row = focused_cell.row0, focused_cell.row1 do
-      vim.api.nvim_buf_add_highlight(list.win.buf, ns, FOCUS_HL, row + 1, focused_cell.col0, focused_cell.col1 + 1)
-    end
+    highlight_cell(list.win.buf, focused_cell, FOCUS_HL)
   end
 
   vim.bo[list.win.buf].modifiable = false
@@ -222,6 +291,25 @@ function M.enable(picker)
   state.enabled = true
   picker.list.render = M.render
   picker.list.current = M.current_from_list
+  picker:set_layout(popout_layout())
+
+  -- The picker's own `VimResized` handler re-resolves the picker's
+  -- statically-configured layout (the sidebar) on every resize — it has no
+  -- notion of treemap mode, so left alone it would silently snap back out
+  -- of the popout on the next resize. Re-assert after a short defer (not
+  -- `vim.schedule`, which could still lose the race against that handler's
+  -- own scheduled callback within the same tick) so this reliably wins.
+  if not state.resize_guard then
+    state.resize_guard = true
+    picker.list.win:on("VimResized", function()
+      vim.defer_fn(function()
+        if M.is_enabled(picker) then
+          picker:set_layout(popout_layout())
+        end
+      end, 30)
+    end)
+  end
+
   picker.list.dirty = true
   picker.list:render()
 end
@@ -235,6 +323,7 @@ function M.disable(picker)
   state.enabled = false
   picker.list.render = nil
   picker.list.current = nil
+  picker:set_layout(nil)
   picker.list.dirty = true
   picker.list:render()
 end
