@@ -347,4 +347,11 @@ M.actions.explorer_warn_prev = { action = "explorer_diagnostic", severity = vim.
 M.actions.explorer_error_next = { action = "explorer_diagnostic", severity = vim.diagnostic.severity.ERROR }
 M.actions.explorer_error_prev = { action = "explorer_diagnostic", severity = vim.diagnostic.severity.ERROR, up = true }
 
+-- Treemap view: a toggleable alternative to the tree list (see
+-- snacks.explorer.treemap). Merged in here so its actions are discoverable
+-- by name the same way as every other explorer action.
+for name, fn in pairs(require("snacks.explorer.treemap").actions) do
+  M.actions[name] = fn
+end
+
 return M
